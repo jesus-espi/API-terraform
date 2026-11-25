@@ -1,0 +1,26 @@
+name: Gravitee IaC CI-CD
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.10.0"
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Apply
+        env:
+          TF_VAR_sa_token: ${{ secrets.APIM_SA_TOKEN }}
+          TF_VAR_server_url: ${{ secrets.APIM_SERVER_URL }}
+        run: terraform apply -auto-approve
