@@ -16,7 +16,7 @@ locals {
   env_id = "b8135005-7573-4ed5-9350-0575739ed56a"
 
   api_definition = {
-    name              = "API 2.8 IaC - Jesus Espi"
+    name              = "API 2.8 - Jesus Espi"
     apiVersion        = "1.0.0"
     definitionVersion = "V4"
     type              = "PROXY"
@@ -27,7 +27,7 @@ locals {
         type = "HTTP"
         paths = [
           {
-            path = "/iac-api-jesus-espi"
+            path = "/jesus-espi-2-8"
           }
         ]
         entrypoints = [
