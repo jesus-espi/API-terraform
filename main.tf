@@ -11,70 +11,110 @@ variable "sa_token" {
   sensitive = true
 }
 
-# ---------------------------------------------------------------------------
-# Exercise 2.8 - API2-JesusEspi managed as code
-# The pipeline applies the desired deployment state below to the existing
-# API2-JesusEspi (sharding tag from 2.7 + tenant routing on the endpoints)
-# and redeploys it. Everything else on the API (flows, cache, failover...)
-# is kept as it is.
-# ---------------------------------------------------------------------------
 locals {
   org_id = "38907341-741d-42af-9073-41741de2af61"
-  env_id = "b8135005-7573-4ed5-9350-0575739ed56a" # Development
-  api_id = "33f103aa-33e3-40a6-b103-aa33e3e0a6f1" # API2-JesusEspi
+  env_id = "b8135005-7573-4ed5-9350-0575739ed56a"
 
-  desired = {
-    # Sharding tag from exercise 2.7: only gateways tagged "private"
-    tags = ["private"]
+  api_definition = {
+    name              = "API 2.8 IaC - Jesus Espi"
+    apiVersion        = "1.0.0"
+    definitionVersion = "V4"
+    type              = "PROXY"
+    description       = "Deployed automatically via Terraform CI/CD"
+    tags              = ["private"]
+    listeners = [
+      {
+        type = "HTTP"
+        paths = [
+          {
+            path = "/iac-api-jesus-espi"
+          }
+        ]
+        entrypoints = [
+          {
+            type = "http-proxy"
+          }
+        ]
+      }
+    ]
+    endpointGroups = [
+      {
+        name = "default-http-group"
+        type = "http-proxy"
+        endpoints = [
+          {
+            name                 = "eu-tenant-endpoint"
+            type                 = "http-proxy"
+            weight               = 1
+            inheritConfiguration = false
+            tenants              = ["eu"]
+            configuration = {
+              target = "https://jsonplaceholder.typicode.com/users/1"
+            }
+          },
+          {
+            name                 = "default-fallback-endpoint"
+            type                 = "http-proxy"
+            weight               = 1
+            secondary            = true
+            inheritConfiguration = false
+            configuration = {
+              target = "https://api.gravitee.io/echo"
+            }
+          }
+        ]
+      }
+    ]
+  }
 
-    # Tenant routing rules per endpoint (tenant keys defined in the org)
-    endpoint_tenants = {
-      "primary-petstore-v2" = ["eu"]
-      "secondary-httpbin"   = []
+  plan_definition = {
+    name              = "Keyless IaC Plan"
+    definitionVersion = "V4"
+    mode              = "STANDARD"
+    validation        = "AUTO"
+    security = {
+      type = "KEY_LESS"
     }
-
-    deployment_label = "Terraform CI/CD - tags + tenants"
   }
 }
 
-resource "terraform_data" "api2_jesusespi" {
+resource "terraform_data" "gravitee_apiv4_deployment" {
   triggers_replace = [
-    sha256(jsonencode(local.desired))
+    sha256(jsonencode(local.api_definition))
   ]
 
   provisioner "local-exec" {
     command = <<-EOT
-      set -euo pipefail
+      set -e
       BASE_URL="${var.server_url}/v2/environments/${local.env_id}"
-      AUTH="Authorization: Bearer ${var.sa_token}"
-      API_ID="${local.api_id}"
 
-      echo "1. Reading current definition of API2-JesusEspi..."
-      CURRENT=$(curl -sS -f "$BASE_URL/apis/$API_ID" -H "$AUTH")
-      echo "$CURRENT" | jq '{name, tags, deploymentState, endpoints: [.endpointGroups[].endpoints[] | {name, tenants}]}'
-
-      echo "2. Applying desired state (sharding tag + tenants)..."
-      BODY=$(echo "$CURRENT" | jq --argjson d '${jsonencode(local.desired)}' '
-        {name, apiVersion, definitionVersion, type, description, tags, labels, categories,
-         listeners, endpointGroups, analytics, properties, resources, flowExecution, flows,
-         responseTemplates, lifecycleState, visibility, groups, failover, services,
-         disableMembershipNotifications, allowedInApiProducts, allowMultiJwtOauth2Subscriptions}
-        | with_entries(select(.value != null))
-        | .tags = $d.tags
-        | .endpointGroups |= map(.endpoints |= map(
-            if $d.endpoint_tenants[.name] != null then .tenants = $d.endpoint_tenants[.name] else . end))')
-
-      curl -sS -f -X PUT "$BASE_URL/apis/$API_ID" -H "$AUTH" \
-        -H "Content-Type: application/json" -d "$BODY" > /dev/null
-
-      echo "3. Deploying API2-JesusEspi to the tagged gateways..."
-      curl -sS -f -X POST "$BASE_URL/apis/$API_ID/deployments" -H "$AUTH" \
+      echo "1. Creating V4 API with sharding tag and tenant rules..."
+      API_RESPONSE=$(curl -sS -w "\n%%{http_code}" -X POST "$BASE_URL/apis" \
+        -H "Authorization: Bearer ${var.sa_token}" \
         -H "Content-Type: application/json" \
-        -d '{"deploymentLabel":"${local.desired.deployment_label}"}' > /dev/null
+        -d '${jsonencode(local.api_definition)}')
 
-      echo "4. Verifying deployed state..."
-      curl -sS -f "$BASE_URL/apis/$API_ID" -H "$AUTH" \
-        | jq '{name, state, deploymentState, tags, endpoints: [.endpointGroups[].endpoints[] | {name, tenants}]}'
+      HTTP_CODE=$(echo "$API_RESPONSE" | tail -n1)
+      BODY=$(echo "$API_RESPONSE" | sed '$d')
+      echo "API Create Status: $HTTP_CODE"
+      if [ "$HTTP_CODE" -ge 300 ]; then echo "$BODY"; exit 1; fi
+
+      API_ID=$(echo "$BODY" | jq -r '.id')
+      echo "Created API ID: $API_ID"
+
+      echo "2. Creating and publishing Keyless Plan..."
+      PLAN_RESPONSE=$(curl -sS -X POST "$BASE_URL/apis/$API_ID/plans" \
+        -H "Authorization: Bearer ${var.sa_token}" \
+        -H "Content-Type: application/json" \
+        -d '${jsonencode(local.plan_definition)}')
+      PLAN_ID=$(echo "$PLAN_RESPONSE" | jq -r '.id')
+
+      curl -sS -X POST "$BASE_URL/apis/$API_ID/plans/$PLAN_ID/_publish" \
+        -H "Authorization: Bearer ${var.sa_token}" > /dev/null
+
+      echo "3. Starting and deploying API to designated gateway..."
+      curl -sS -X POST "$BASE_URL/apis/$API_ID/_start" \
+        -H "Authorization: Bearer ${var.sa_token}" > /dev/null
     EOT
   }
 }
