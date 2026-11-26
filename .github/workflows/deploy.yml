@@ -21,6 +21,6 @@ jobs:
 
       - name: Terraform Apply
         env:
-          TF_VAR_sa_token: ${{ secrets.APIM_SA_TOKEN }}
+          GRAVITEE_TOKEN: ${{ secrets.APIM_SA_TOKEN }}
           TF_VAR_server_url: ${{ secrets.APIM_SERVER_URL }}
         run: terraform apply -auto-approve
